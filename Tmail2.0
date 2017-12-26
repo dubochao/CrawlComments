@@ -1,0 +1,249 @@
+'''
+天猫评论
+'''
+'''
+问题：
+1、“下一页”有时失效
+2、获取评论正文或其他元素的时候，get_text()，有时也会失效
+'''
+'''
+单线程 四页：用时 31.098634739679607 s
+多线程 四页：用时 30.830227938384137 s
+'''
+from selenium import webdriver
+import time
+from bs4 import BeautifulSoup
+import re
+import pymysql
+import threading
+
+class CrawlTmail():
+
+    def __init__(self):
+        self.pagesource = [] # 存放每一页面的源码
+        self.comments = [] # 存放评论内容
+        self.users = [] # 存放评论人的昵称
+        self.date = [] # 存放时间
+        self.commentapps = [] # 存放追加评论
+        self.photos = [] # 存放图片
+        self.grades = [] # 存放等级
+        self.colors = [] # 存放颜色
+        self.sizes = [] # 存放尺码
+        self.title = ""
+
+        self.index = [0]
+        self.conn = conn
+        self.cur = cur
+
+        # pagesource 的锁和信号量
+        self.lock_pagesource = threading.Lock()
+        self.sem_page = threading.Semaphore(value=0)
+        self.tag_page = 0
+
+        # info 的锁和信号量
+        self.lock_info = threading.Lock()
+        self.sem_info = threading.Semaphore(value=0)
+        self.tag_info = 0
+
+    def visitTmail(self):
+        # 获取页面源码
+        driver = webdriver.PhantomJS()
+        driver.get('https://detail.tmall.com/item.htm?spm=a220m.1000858.1000725.1.4c6378107LgaQO&id=556493915727&skuId=3606731270413&user_id=391855697&cat_id=50076895&is_b=1&rn=d063b9d525bda983402a5cc3d747c629')
+        # 定位评论的id
+        messageid = driver.find_element_by_id("J_Reviews")
+        # 等待页面脚本的加载
+        driver.execute_script("arguments[0].scrollIntoView();", messageid)
+        time.sleep(5)
+        # 获取当前页面源码
+        # self.lock_pagesource.acquire()
+        self.pagesource.append(driver.page_source)
+        # self.lock_pagesource.release()
+        self.sem_page.release()
+        nextpage = driver.find_element_by_partial_link_text("下一页")
+        # 获取剩余页面的源码
+        count=0
+        while nextpage:
+            nextpage.click()
+            # self.lock_pagesource.acquire()
+            self.pagesource.append(driver.page_source)
+            # self.lock_pagesource.release()
+            self.sem_page.release()
+            nextpage = driver.find_element_by_partial_link_text("下一页")
+            count+=1
+            if count==3:
+                break
+        self.tag_page = 1
+        print(len(self.pagesource))
+
+    def getTitle(self):
+        # 获取商品的标题
+        self.sem_page.acquire()
+        # self.lock_pagesource.acquire()
+        soup = BeautifulSoup(self.pagesource[0], "lxml")
+        # self.lock_pagesource.release()
+        self.title = soup.title.string
+        print(self.title)
+
+    def getInformation(self):
+        # for p in self.pagesource:
+        p = 0
+        while self.tag_page == 0:
+
+            self.sem_page.acquire()
+            # self.lock_pagesource.acquire()
+            soup = BeautifulSoup(self.pagesource[p] ,"lxml")
+            # self.lock_pagesource.release()
+
+            for inf in soup.find_all('tr',):
+                # self.lock_info.acquire()
+                self.comments.append(inf.find(class_="tm-rate-fulltxt").get_text())# 评论
+                self.date.append(inf.find(class_ ="tm-rate-date").get_text())# 时间
+                self.users.append(inf.find(class_ ="rate-user-info").get_text())# 评论人
+
+                color_size = inf.find(class_="rate-sku").get_text()  # 颜色和尺码
+                color_re = re.compile('颜色.*?色')
+                size_re = re.compile('尺码.*')
+                self.colors.append(color_re.search(str(color_size)).group(0))
+                self.sizes.append(size_re.search(str(color_size)).group(0))
+
+                commentapp = inf.find(class_="tm-rate-append") # 追加评论
+                if commentapp:
+                    commentapp = commentapp.get_text()
+                self.commentapps.append(commentapp)
+
+                y = inf.find_all("img")# 图片
+                photo_re = re.compile('(?<=\").*?(?=\")')
+                photo = photo_re.search(str(y))
+                if photo:
+                    photo = photo.group(0)
+                self.photos.append(photo)
+
+                grade = inf.find(class_ ="rate-user-grade")# 等级
+                if grade:
+                    grade = grade.get_text()
+                self.grades.append(grade)
+
+                # self.lock_info.release()
+                self.sem_info.release()
+            p+=1
+
+            while p<len(self.pagesource):
+                soup = BeautifulSoup(self.pagesource[p], "lxml")
+
+                for inf in soup.find_all('tr', ):
+                    self.lock_info.acquire()
+                    self.comments.append(inf.find(class_="tm-rate-fulltxt").get_text())  # 评论
+                    self.date.append(inf.find(class_="tm-rate-date").get_text())  # 时间
+                    self.users.append(inf.find(class_="rate-user-info").get_text())  # 评论人
+
+                    color_size = inf.find(class_="rate-sku").get_text()  # 颜色和尺码
+                    color_re = re.compile('颜色.*?色')
+                    size_re = re.compile('尺码.*')
+                    self.colors.append(color_re.search(str(color_size)).group(0))
+                    self.sizes.append(size_re.search(str(color_size)).group(0))
+
+                    commentapp = inf.find(class_="tm-rate-append")  # 追加评论
+                    if commentapp:
+                        commentapp = commentapp.get_text()
+                    self.commentapps.append(commentapp)
+
+                    y = inf.find_all("img")  # 图片
+                    photo_re = re.compile('(?<=\").*?(?=\")')
+                    photo = photo_re.search(str(y))
+                    if photo:
+                        photo = photo.group(0)
+                    self.photos.append(photo)
+
+                    grade = inf.find(class_="rate-user-grade")  # 等级
+                    if grade:
+                        grade = grade.get_text()
+                    self.grades.append(grade)
+
+                    self.lock_info.release()
+                    self.sem_info.release()
+                p += 1
+
+            self.tag_info = 1
+            print(len(self.comments))
+
+    def Savesql(self):
+        #存入数据库
+
+        # 存入标题
+        param1 = (self.title)
+        sql1 = "insert into commodity (comm_title) values(%s)"
+        self.cur.execute(sql1, param1)
+        self.conn.commit()
+
+        # 存入评论人信息，评论信息
+        length = len(self.comments)
+        i=self.index[0]
+        k = 0
+        # for k in range(i,length):
+        while self.tag_info==0:
+            self.sem_info.acquire()
+            # self.lock_info.acquire()
+            param2 = (self.users[k] , self.grades[k] , self.colors[k] , self.sizes[k])
+            param3 = (self.users[k], self.date[k], self.comments[k], self.photos[k], self.commentapps[k])
+            # self.lock_info.release()
+
+            sql2 = "insert into TMUser (user_name,vip_level,color,size) values(%s,%s,%s,%s)"
+            self.cur.execute(sql2, param2)
+            self.conn.commit()
+
+            sql3 = "insert into review (user_name,re_date,content,picture,contentapp) values(%s,%s,%s,%s,%s)"
+            self.cur.execute(sql3, param3)
+            self.conn.commit()
+
+            self.index[0]=self.index[0]+1
+            k+=1
+
+        while k<len(self.users):
+            param2 = (self.users[k], self.grades[k], self.colors[k], self.sizes[k])
+            param3 = (self.users[k], self.date[k], self.comments[k], self.photos[k], self.commentapps[k])
+
+            sql2 = "insert into TMUser (user_name,vip_level,color,size) values(%s,%s,%s,%s)"
+            self.cur.execute(sql2, param2)
+            self.conn.commit()
+
+            sql3 = "insert into review (user_name,re_date,content,picture,contentapp) values(%s,%s,%s,%s,%s)"
+            self.cur.execute(sql3, param3)
+            self.conn.commit()
+
+            self.index[0] = self.index[0] + 1
+            k += 1
+
+
+    def startCrawl(self):
+        threads = []
+        t1 = threading.Thread(target=self.visitTmail)
+        threads.append(t1)
+        t2 = threading.Thread(target=self.getTitle)
+        threads.append(t2)
+        t3 = threading.Thread(target=self.getInformation)
+        threads.append(t3)
+        t4 = threading.Thread(target=self.Savesql)
+        threads.append(t4)
+
+        for t in threads:
+            t.setDaemon(True)
+            t.start()
+        t.join()
+
+
+#数据库链接
+conn= pymysql.connect(
+        host='localhost',
+        port=3306,
+        user='root',
+        passwd='009795',
+        db='pythonsql',
+        charset='utf8',
+        cursorclass=pymysql.cursors.DictCursor,
+        )
+cur = conn.cursor()
+start = time.clock()
+CrawlTmail().startCrawl()
+end = time.clock()
+print("用时为：",end - start,'s')
+conn.close()
